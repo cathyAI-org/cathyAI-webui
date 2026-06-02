@@ -975,6 +975,8 @@ async def main(message: cl.Message):
     reply = ""
     stats_data = None
     thinking_text = ""
+    last_reasoning_update = 0.0
+    reasoning_update_interval = 0.25
 
     msg = cl.Message(content="", author=character_display_name(char))
     await msg.send()
@@ -1000,19 +1002,48 @@ async def main(message: cl.Message):
 
             if event_type == "thinking_delta":
                 delta = event.get("content") or ""
-                if delta:
-                    thinking_text += delta
+                if not delta:
+                    continue
+
+                thinking_text += delta
+
+                now = time.monotonic()
+                if now - last_reasoning_update >= reasoning_update_interval:
+                    reasoning_element.props = {
+                        "thinking": thinking_text,
+                        "isThinking": True,
+                        "stats": stats_data or {},
+                    }
+                    msg.elements = [reasoning_element]
+                    await msg.update()
+                    last_reasoning_update = now
 
             elif event_type == "answer_delta":
                 delta = event.get("content") or ""
                 if not delta:
                     continue
 
+                if thinking_text and reasoning_element.props.get("isThinking"):
+                    reasoning_element.props = {
+                        "thinking": thinking_text,
+                        "isThinking": False,
+                        "stats": stats_data or {},
+                    }
+                    msg.elements = [reasoning_element]
+                    await msg.update()
+
                 reply += delta
                 await msg.stream_token(delta)
 
             elif event_type == "stats":
                 stats_data = event.get("data") or {}
+                reasoning_element.props = {
+                    "thinking": thinking_text,
+                    "isThinking": False,
+                    "stats": stats_data,
+                }
+                msg.elements = [reasoning_element]
+                await msg.update()
 
             elif event_type == "done":
                 break
