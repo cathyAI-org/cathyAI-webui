@@ -236,106 +236,6 @@ async def stream_chat(model, messages):
             logger.error(f"Non-streaming fallback failed: {fallback_error}")
             raise
 
-def extract_ollama_stats(chunk: dict) -> dict:
-    """Extract Ollama generation statistics from the final stream chunk."""
-    eval_count = chunk.get("eval_count")
-    eval_duration = chunk.get("eval_duration")
-    prompt_eval_count = chunk.get("prompt_eval_count")
-    prompt_eval_duration = chunk.get("prompt_eval_duration")
-    total_duration = chunk.get("total_duration")
-    load_duration = chunk.get("load_duration")
-
-    tok_s = None
-    if eval_count and eval_duration:
-        tok_s = eval_count / (eval_duration / 1_000_000_000)
-
-    return {
-        "prompt_tokens": prompt_eval_count,
-        "completion_tokens": eval_count,
-        "tok_s": tok_s,
-        "total_time_s": total_duration / 1_000_000_000 if total_duration else None,
-        "load_time_s": load_duration / 1_000_000_000 if load_duration else None,
-        "prompt_eval_time_s": prompt_eval_duration / 1_000_000_000 if prompt_eval_duration else None,
-        "eval_time_s": eval_duration / 1_000_000_000 if eval_duration else None,
-    }
-
-
-async def stream_chat_events(model, messages):
-    """Stream chat as structured events: thinking, answer, stats, done."""
-    if not CHAT_API_URL:
-        raise Exception("CHAT_API_URL not configured")
-
-    headers = {"Content-Type": "application/json"}
-    if CHAT_API_KEY:
-        headers["Authorization"] = f"Bearer {CHAT_API_KEY}"
-
-    payload = {"model": model, "messages": messages, "stream": True}
-
-    try:
-        async with client.stream("POST", CHAT_API_URL, json=payload, headers=headers, timeout=CHAT_TIMEOUT) as response:
-            response.raise_for_status()
-
-            async for line in response.aiter_lines():
-                if not line.strip():
-                    continue
-
-                if line.startswith("data: "):
-                    line = line[6:]
-
-                if line == "[DONE]":
-                    yield {"type": "done"}
-                    break
-
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning("Skipping invalid JSON stream line: %s", line[:200])
-                    continue
-
-                # Ollama NDJSON:
-                # {"message":{"content":"...","thinking":"..."}, "done":false}
-                msg = chunk.get("message") or {}
-
-                thinking = msg.get("thinking")
-                if thinking:
-                    yield {
-                        "type": "thinking_delta",
-                        "content": thinking,
-                        "raw": chunk,
-                    }
-
-                content = msg.get("content")
-                if content:
-                    yield {
-                        "type": "answer_delta",
-                        "content": content,
-                        "raw": chunk,
-                    }
-
-                if chunk.get("done"):
-                    yield {
-                        "type": "stats",
-                        "data": extract_ollama_stats(chunk),
-                        "raw": chunk,
-                    }
-                    yield {"type": "done"}
-                    break
-
-                # Fallback if another provider emits a simple token shape.
-                if "token" in chunk:
-                    yield {
-                        "type": "answer_delta",
-                        "content": chunk["token"],
-                        "raw": chunk,
-                    }
-
-    except httpx.TimeoutException:
-        logger.error("Chat API timeout")
-        raise Exception("Request timed out")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Chat API error: {e}")
-        raise
-
 async def detect_emotion(text):
     """Detect emotion from text using external API.
     
@@ -973,60 +873,19 @@ async def main(message: cl.Message):
     append_event("user", message.content)
 
     reply = ""
-    stats_data = None
-    thinking_text = ""
-
     msg = cl.Message(content="", author=character_display_name(char))
     await msg.send()
 
-    reasoning_element = cl.CustomElement(
-        name="ReasoningPanel",
-        props={
-            "thinking": "",
-            "isThinking": True,
-            "stats": {},
-        },
-        display="inline",
-    )
-
-    msg.elements = [reasoning_element]
-    await msg.update()
-
     try:
         logger.info(f"Calling chat API with model: {selected_model}")
-
-        async for event in stream_chat_events(selected_model, history):
-            event_type = event.get("type")
-
-            if event_type == "thinking_delta":
-                delta = event.get("content") or ""
-                if delta:
-                    thinking_text += delta
-
-            elif event_type == "answer_delta":
-                delta = event.get("content") or ""
-                if not delta:
-                    continue
-
-                reply += delta
-                await msg.stream_token(delta)
-
-            elif event_type == "stats":
-                stats_data = event.get("data") or {}
-
-            elif event_type == "done":
-                break
+        async for token in stream_chat(selected_model, history):
+            reply += token
+            await msg.stream_token(token)
     except Exception as e:
         logger.error(f"Chat API error: {e}")
-        reply = f"⚠ Chat API error: {str(e)}"
+        reply = f"⚠️ Chat API error: {str(e)}"
         await msg.stream_token(reply)
 
-    reasoning_element.props = {
-        "thinking": thinking_text,
-        "isThinking": False,
-        "stats": stats_data or {},
-    }
-    msg.elements = [reasoning_element]
     await msg.update()
 
     # Emotion detection with error handling
