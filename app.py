@@ -9,7 +9,11 @@ import httpx
 import aiohttp
 import asyncpg
 import chainlit as cl
-from chainlit.data.chainlit_data_layer import ChainlitDataLayer
+try:
+    from chainlit.data.chainlit_data_layer import ChainlitDataLayer
+except Exception:
+    ChainLitDataLayerImportError = True
+    ChainlitDataLayer = None
 from chainlit.data.storage_clients.base import BaseStorageClient
 import json
 from urllib.parse import quote
@@ -1085,6 +1089,9 @@ class LocalPublicStorageClient(BaseStorageClient):
 
 @cl.data_layer
 def get_data_layer():
+    if ChainlitDataLayer is None:
+        logger.warning("ChainlitDataLayer unavailable; returning no data layer")
+        return None
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         return None
