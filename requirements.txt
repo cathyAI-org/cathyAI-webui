@@ -11,3 +11,10 @@ bcrypt==4.1.2
 
 # Testing
 pytest
+
+asyncpg
+
+SQLAlchemy
+
+greenlet
+aiohttp

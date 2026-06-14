@@ -1,7 +1,26 @@
 version: '3.8'
 services:
+  chainlit_db:
+    image: postgres:16
+    container_name: cathyai_chainlit_db
+    environment:
+      POSTGRES_DB: chainlit
+      POSTGRES_USER: chainlit
+      POSTGRES_PASSWORD: ${CHAINLIT_DB_PASSWORD}
+    volumes:
+      - ./state/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chainlit -d chainlit"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   webbui_chat:
     container_name: cathyai_webbui_chat
+    depends_on:
+      chainlit_db:
+        condition: service_healthy
     build: .
     working_dir: /app
     ports:
