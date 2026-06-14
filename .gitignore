@@ -8,3 +8,13 @@ state/
 *.sqlite
 *.db
 /tmp/
+
+# Local patch backups
+*.bak
+*.bak.*
+*.backup
+*.backup.*
+.env.bak*
+app.py.bak*
+docker-compose.yaml.bak*
+requirements.txt.bak*
