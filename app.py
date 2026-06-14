@@ -14,7 +14,10 @@ try:
 except Exception:
     ChainLitDataLayerImportError = True
     ChainlitDataLayer = None
-from chainlit.data.storage_clients.base import BaseStorageClient
+try:
+    from chainlit.data.storage_clients.base import BaseStorageClient
+except Exception:
+    BaseStorageClient = object
 import json
 from urllib.parse import quote
 import time
