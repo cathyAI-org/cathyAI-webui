@@ -218,6 +218,20 @@ async def stream_chat(model, messages):
         headers["Authorization"] = f"Bearer {CHAT_API_KEY}"
     
     payload = {"model": model, "messages": messages, "stream": True}
+
+    # Forward mode/settings so the AI backend can enforce tool policy.
+    try:
+        settings = cl.user_session.get("settings") or {}
+    except Exception:
+        settings = {}
+
+    try:
+        mode = cl.user_session.get("mode") or "assistant"
+    except Exception:
+        mode = "assistant"
+
+    payload["settings"] = settings
+    payload["mode"] = mode
     
     try:
         async with client.stream("POST", CHAT_API_URL, json=payload, headers=headers, timeout=CHAT_TIMEOUT) as response:
@@ -294,7 +308,7 @@ def extract_ollama_stats(chunk: dict) -> dict:
     }
 
 
-async def stream_chat_events_callback(model, messages, on_event):
+async def stream_chat_events_callback(model, messages, on_event, think=None):
     """Stream chat using aiohttp to avoid httpx GeneratorExit cleanup noise."""
     if not CHAT_API_URL:
         raise Exception("CHAT_API_URL not configured")
@@ -305,7 +319,31 @@ async def stream_chat_events_callback(model, messages, on_event):
 
     payload = {"model": model, "messages": messages, "stream": True}
 
-    timeout = aiohttp.ClientTimeout(total=CHAT_TIMEOUT)
+    # Forward mode/settings so the AI backend can enforce tool policy.
+    try:
+        settings = cl.user_session.get("settings") or {}
+    except Exception:
+        settings = {}
+
+    try:
+        mode = cl.user_session.get("mode") or "assistant"
+    except Exception:
+        mode = "assistant"
+
+    payload["settings"] = settings
+    payload["mode"] = mode
+
+    if think is not None:
+        payload["think"] = think
+
+    # Streaming chat must not have a fixed total/read timeout.
+    # Long-thinking models may legitimately run for many minutes while still streaming.
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        connect=30,
+        sock_connect=30,
+        sock_read=None,
+    )
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -365,11 +403,11 @@ async def stream_chat_events_callback(model, messages, on_event):
                             "raw": chunk,
                         })
 
-    except TimeoutError:
-        logger.error("Chat API timeout")
-        raise Exception("Request timed out")
+    except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as e:
+        logger.exception("Chat API timeout during stream")
+        raise Exception("Request timed out") from e
     except aiohttp.ClientError as e:
-        logger.error("Chat API aiohttp error: %s", e)
+        logger.exception("Chat API aiohttp error during stream")
         raise
 
 
@@ -793,6 +831,12 @@ async def send_model_settings(model_names: list[str], default_model: str | None,
                     values=thinking_values,
                     initial_value=thinking,
                 ),
+                cl.input_widget.Select(
+                    id="Internet",
+                    label="Internet",
+                    values=["Auto", "Off"],
+                    initial_value="Auto",
+                ),
             ]
         ).send()
     except Exception as e:
@@ -940,7 +984,21 @@ async def handle_assistant_message(message: cl.Message):
 
     try:
         logger.info(f"Calling assistant chat API with model: {selected_model}")
-        await stream_chat_events_callback(selected_model, history, on_assistant_event)
+        settings = cl.user_session.get("settings") or {}
+        thinking_setting = settings.get("Thinking", "Auto")
+
+        think = None
+        if thinking_setting == "On":
+            think = True
+        elif thinking_setting == "Off":
+            think = False
+
+        await stream_chat_events_callback(
+            selected_model,
+            history,
+            on_assistant_event,
+            think=think,
+        )
 
     except Exception as e:
         logger.exception(f"Assistant chat failed: {e}")
